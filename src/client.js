@@ -19,7 +19,7 @@ class ApiError extends Error {
 
 const _endpoints = {
     login: {
-        url: (guid) => `https://auth.itunes.apple.com/auth/v1/native/fast/?guid=${guid}`,
+        url: (guid) => `https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate?guid=${guid}`,
         buildBody: ({email, password, mfa}) => ({
             appleId: email,
             attempt: 1,
@@ -109,7 +109,14 @@ class Store {
         return this.#request('登录账号：', async () => {
             const endpoint = _endpoints.login;
             const body = plist.build({...endpoint.buildBody({email, password, mfa}), guid: this.guid});
-            const resp = await this._apiClient.post(endpoint.url(this.guid), body);
+            let resp = await this._apiClient.post(endpoint.url(this.guid), body, {
+                maxRedirects: 0,
+                validateStatus: s => s >= 200 && s < 400
+            });
+            if ((resp.status >= 300 && resp.status < 400) && resp.headers.location) {
+                const nextUrl = resp.headers.location;
+                resp = await this._apiClient.post(nextUrl, body);
+            }
             const parsedResp = plist.parse(resp.data);
             if (!parsedResp.hasOwnProperty('status')) {
                 throw new ApiError('登录认证失败', parsedResp.failureType, parsedResp.customerMessage);
@@ -132,11 +139,24 @@ class Store {
     static async AppInfo(appIdentifier, appVerId, authContext) {
         return this.#request('下载软件：', async () => {
             const endpoint = _endpoints.AppInfo;
-            const body = plist.build({...endpoint.buildBody({appIdentifier, appVerId}), guid: this.guid});
-            const resp = await this._apiClient.post(endpoint.url(this.guid), body, {authContext});
-            const parsedResp = plist.parse(resp.data);
+            const maxRetry = 5; // 最大重试3次
+            let retryCount = 0;
+            let parsedResp;
+            while (retryCount <= maxRetry) {
+                const body = plist.build({...endpoint.buildBody({appIdentifier, appVerId}), guid: this.guid});
+                const resp = await this._apiClient.post(endpoint.url(this.guid), body, {authContext});
+                parsedResp = plist.parse(resp.data);
+                if (parsedResp.failureType === '5002') {
+                    retryCount++;
+                    if (retryCount > maxRetry) break;
+                    console.log(`获取App信息 5002繁忙，即将第${retryCount}次重试`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
+                break;
+            }
             if (parsedResp.failureType === '5002') {
-                throw new ApiError('获取App信息失败', parsedResp.failureType, '服务器繁忙请重试');
+                throw new ApiError('获取App信息失败', parsedResp.failureType, '服务器繁忙，多次重试仍然失败');
             }
             if (parsedResp.customerMessage) {
                 const message = parsedResp.customerMessage;
