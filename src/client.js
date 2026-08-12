@@ -34,6 +34,7 @@ const _endpoints = {
         buildBody: ({appIdentifier, appVerId}) => ({
             creditDisplay: '',
             salableAdamId: appIdentifier,
+            serialNumber: '0',
             ...(appVerId && {externalVersionId: appVerId})
         })
     },
